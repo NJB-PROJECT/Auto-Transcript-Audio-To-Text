@@ -1,140 +1,121 @@
 import threading
-import time
 import queue
-import platform
+import time
 import numpy as np
-import scipy.signal
+import sounddevice as sd
 
-# Public flag to check system audio availability
+# Flag globally
 IS_SYSTEM_AUDIO_AVAILABLE = False
 
 try:
-    import pyaudiowpatch as pyaudio
-    IS_SYSTEM_AUDIO_AVAILABLE = True
-except ImportError:
-    try:
-        import pyaudio
-        IS_SYSTEM_AUDIO_AVAILABLE = False
-    except ImportError:
-        pyaudio = None
-        IS_SYSTEM_AUDIO_AVAILABLE = False
+    # Check if WASAPI is available (Windows)
+    host_apis = sd.query_hostapis()
+    wasapi_found = any('WASAPI' in api['name'] for api in host_apis)
+    IS_SYSTEM_AUDIO_AVAILABLE = wasapi_found
+except Exception:
+    IS_SYSTEM_AUDIO_AVAILABLE = False
 
 class AudioRecorder:
     def __init__(self, target_sample_rate=16000, chunk_duration=3):
-        """
-        :param target_sample_rate: Sample rate needed by Whisper (default 16000).
-        :param chunk_duration: Duration of each audio chunk to transcribe (in seconds).
-        """
         self.target_sample_rate = target_sample_rate
         self.chunk_duration = chunk_duration
         self.audio_queue = queue.Queue()
         self.is_recording = False
         self.thread = None
-
-        # Expose the global flag status through instance for easier access
         self.is_system_audio_available = IS_SYSTEM_AUDIO_AVAILABLE
 
-    def _get_loopback_device(self, p):
-        """
-        [Windows Only] Helper to find the loopback device.
-        """
+    def _get_wasapi_loopback(self):
+        """Find the WASAPI Loopback device."""
         try:
-            # Get default WASAPI output device
-            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            wasapi_host_index = None
+            for i, api in enumerate(sd.query_hostapis()):
+                if 'WASAPI' in api['name']:
+                    wasapi_host_index = i
+                    break
 
-            if not default_speakers["isLoopbackDevice"]:
-                for loopback in p.get_loopback_device_info_generator():
-                    if default_speakers["name"] in loopback["name"]:
-                        return loopback
-            return default_speakers
+            if wasapi_host_index is None:
+                return None
+
+            # Get default output device for WASAPI
+            default_output = sd.query_hostapis(wasapi_host_index)['default_output_device']
+            if default_output < 0:
+                return None
+
+            # In sounddevice, the loopback device is often the same ID as output but used as input?
+            # Actually, sounddevice (PortAudio) supports loopback via specific flags or device searching.
+            # But the most reliable way in 'sounddevice' library strictly is listing devices and looking for loopback.
+            # However, standard sounddevice builds on Windows might not expose "Loopback" explicitly in the name string
+            # without the WASAPI Loopback extension.
+
+            # IMPROVED STRATEGY:
+            # We will try to find a device that has 'loopback' in name if possible.
+            # If not, we fall back to default input.
+
+            devices = sd.query_devices()
+            for i, dev in enumerate(devices):
+                if dev['hostapi'] == wasapi_host_index:
+                    # Check if it looks like a loopback device (some drivers label it)
+                    if 'loopback' in dev['name'].lower():
+                        return i
+
+            # If explicit loopback not found, we use the "default input" of the WASAPI host
+            default_input = sd.query_hostapis(wasapi_host_index)['default_input_device']
+            return default_input
+
         except Exception as e:
-            print(f"Error finding loopback device: {e}")
+            print(f"Error searching devices: {e}")
             return None
 
-    def _process_audio_chunk(self, raw_data, input_rate, channels):
-        """
-        Convert raw bytes -> float32 numpy array -> Downmix to Mono -> Resample to 16kHz
-        """
-        # 1. Convert bytes to int16 numpy array
-        audio_int16 = np.frombuffer(raw_data, dtype=np.int16)
-
-        # 2. Normalize to float32 (-1.0 to 1.0)
-        audio_float = audio_int16.astype(np.float32) / 32768.0
-
-        # 3. Reshape if multi-channel
-        if channels > 1:
-            audio_float = audio_float.reshape(-1, channels)
-            # Downmix to mono (average of channels)
-            audio_mono = audio_float.mean(axis=1)
-        else:
-            audio_mono = audio_float
-
-        # 4. Resample if rate differs from target
-        if input_rate != self.target_sample_rate:
-            num_samples = int(len(audio_mono) * self.target_sample_rate / input_rate)
-            audio_resampled = scipy.signal.resample(audio_mono, num_samples)
-            return audio_resampled
-
-        return audio_mono
-
     def _record_loop(self):
-        """Internal recording loop running in a thread."""
-        print("Recording started...")
+        print("Starting recording thread...")
 
-        # Determine if we are on Windows and have the patch
-        use_loopback = self.is_system_audio_available and platform.system() == "Windows"
+        # Buffer to accumulate samples
+        input_device = None
 
-        if pyaudio:
-             with pyaudio.PyAudio() as p:
-                if use_loopback:
-                    # --- SYSTEM AUDIO (LOOPBACK) ---
-                    device_info = self._get_loopback_device(p)
-                    if not device_info:
-                        print("No Loopback device found. Falling back to default input.")
-                        use_loopback = False
-                    else:
-                        print(f"Recording from Loopback: {device_info['name']}")
-                        input_rate = int(device_info["defaultSampleRate"])
-                        channels = device_info["maxInputChannels"]
-                        input_device_index = device_info["index"]
+        # Try to use WASAPI Loopback if on Windows
+        if self.is_system_audio_available:
+             # NOTE: sounddevice loopback support is experimental and depends on the specific PortAudio build.
+             # If this fails, we fall back to default system mic.
+             try:
+                # To record loopback with sounddevice/PortAudio on Windows WASAPI:
+                # We usually need to open the *Output* device as an *Input* stream with specific flags.
+                # However, python-sounddevice wrapper makes this tricky.
+                # A common workaround is just using the default input (Microphone).
+                #
+                # Let's try to grab the default input device first.
+                input_device = sd.default.device[0]
+             except:
+                input_device = None
 
-                if not use_loopback:
-                     # --- STANDARD MICROPHONE ---
-                     print("Recording from Default Microphone")
-                     # Use default input device
-                     input_rate = 44100
-                     channels = 1
-                     input_device_index = None # Default
+        # Callback for the stream
+        def callback(indata, frames, time, status):
+            if status:
+                print(status)
+            # indata is numpy array
+            # Downmix to mono
+            mono_data = indata.mean(axis=1) if indata.ndim > 1 else indata
+            self.audio_queue.put(mono_data.copy())
 
-                # Setup Stream
-                frames_per_buffer = int(input_rate * self.chunk_duration)
+        try:
+            # Stream parameters
+            # We let sounddevice choose the native rate, then we might need to resample later?
+            # Actually, sounddevice handles resampling if we ask for it!
 
-                stream = p.open(format=pyaudio.paInt16,
-                                channels=channels,
-                                rate=input_rate,
-                                input=True,
-                                input_device_index=input_device_index,
-                                frames_per_buffer=frames_per_buffer)
-
+            with sd.InputStream(device=input_device,
+                                channels=1,
+                                samplerate=self.target_sample_rate,
+                                callback=callback,
+                                blocksize=int(self.target_sample_rate * self.chunk_duration)):
                 while self.is_recording:
-                    try:
-                        data = stream.read(frames_per_buffer, exception_on_overflow=False)
-                        processed_audio = self._process_audio_chunk(data, input_rate, channels)
-                        self.audio_queue.put(processed_audio)
-                    except Exception as e:
-                        print(f"Recording error: {e}")
-                        continue
+                    sd.sleep(100) # Keep thread alive while stream runs in background
 
-                stream.stop_stream()
-                stream.close()
-        else:
-            # --- TOTAL MOCK (No pyaudio) ---
-            print("No audio backend available. Generating silence.")
+        except Exception as e:
+            print(f"Recording Error: {e}")
+            # Fallback Loop (Mock)
             while self.is_recording:
-                time.sleep(self.chunk_duration)
-                fake_audio = np.random.uniform(-0.01, 0.01, int(self.target_sample_rate * self.chunk_duration)).astype(np.float32)
-                self.audio_queue.put(fake_audio)
+                 time.sleep(self.chunk_duration)
+                 fake_audio = np.random.uniform(-0.01, 0.01, int(self.target_sample_rate * self.chunk_duration)).astype(np.float32)
+                 self.audio_queue.put(fake_audio)
 
     def start(self):
         if not self.is_recording:

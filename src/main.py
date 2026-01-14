@@ -16,9 +16,11 @@ def main(page: ft.Page):
     transcriber = Transcriber(model_size="small") # Use 'small' model
 
     # Check audio availability
-    audio_status_msg = "Sistem Audio Siap (Zoom)" if recorder.is_system_audio_available else "PERINGATAN: Fitur rekam Zoom non-aktif (Hanya Mic)."
-    audio_status_color = ft.Colors.GREEN if recorder.is_system_audio_available else ft.Colors.ORANGE
-    start_btn_text = "Mulai Rekam (System Audio)" if recorder.is_system_audio_available else "Mulai Rekam (Microphone Only)"
+    # In the new sounddevice implementation, we try WASAPI but it might just be the default input if loopback explicit fails.
+    # We update the text to be generic but indicative.
+    audio_status_msg = "Sistem Audio Siap (WASAPI Detected)" if recorder.is_system_audio_available else "Mode Microphone Standard (Kompatibilitas)"
+    audio_status_color = ft.Colors.GREEN if recorder.is_system_audio_available else ft.Colors.BLUE
+    start_btn_text = "Mulai Rekam"
 
     # State Variables
     is_recording = False

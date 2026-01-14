@@ -2,4 +2,5 @@ faster-whisper
 flet
 numpy
 python-docx
-scipy
+sounddevice
+soundfile

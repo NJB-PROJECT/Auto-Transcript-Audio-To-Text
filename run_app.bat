@@ -1,9 +1,10 @@
 @echo off
+cd /d "%~dp0"
 TITLE Audio to Text Installer
 CLS
 
 echo ========================================================
-echo   AUDIO TO TEXT - INSTALLER & RUNNER
+echo   AUDIO TO TEXT - INSTALLER & RUNNER (AUTO-FIX)
 echo ========================================================
 echo.
 
@@ -46,28 +47,13 @@ echo [INFO] Mengaktifkan Venv...
 call venv\Scripts\activate
 
 :: 4. Install Requirements
-echo [INFO] Menginstal library dasar...
+echo [INFO] Menginstal library...
 pip install -r requirements.txt
 if %errorlevel% neq 0 (
-    echo [WARNING] Ada masalah saat install library dasar. Mencoba lanjut...
+    echo [WARNING] Ada masalah saat install library. Mencoba lanjut...
 )
 
-:: 5. Install Audio Library (Smart Try)
-echo [INFO] Menginstal driver audio...
-pip show pyaudiowpatch >nul 2>&1
-if %errorlevel% neq 0 (
-    echo    Mencoba install pyaudiowpatch (untuk rekam Zoom)...
-    pip install pyaudiowpatch
-    if %errorlevel% neq 0 (
-        echo    [X] Gagal install pyaudiowpatch (Mungkin tidak support versi Windows/Python ini).
-        echo    [!] Mencoba fallback ke PyAudio standar...
-        pip install pyaudio
-    ) else (
-        echo    [OK] Driver Zoom berhasil diinstal.
-    )
-)
-
-:: 6. Run App
+:: 5. Run App
 echo.
 echo ========================================================
 echo   MEMULAI APLIKASI...
