@@ -5,17 +5,19 @@ import platform
 import numpy as np
 import scipy.signal
 
-# Try importing pyaudiowpatch (Windows only) or standard pyaudio
+# Public flag to check system audio availability
+IS_SYSTEM_AUDIO_AVAILABLE = False
+
 try:
     import pyaudiowpatch as pyaudio
-    IS_WINDOWS_LOOPBACK_AVAILABLE = True
+    IS_SYSTEM_AUDIO_AVAILABLE = True
 except ImportError:
     try:
         import pyaudio
-        IS_WINDOWS_LOOPBACK_AVAILABLE = False
+        IS_SYSTEM_AUDIO_AVAILABLE = False
     except ImportError:
         pyaudio = None
-        IS_WINDOWS_LOOPBACK_AVAILABLE = False
+        IS_SYSTEM_AUDIO_AVAILABLE = False
 
 class AudioRecorder:
     def __init__(self, target_sample_rate=16000, chunk_duration=3):
@@ -28,6 +30,9 @@ class AudioRecorder:
         self.audio_queue = queue.Queue()
         self.is_recording = False
         self.thread = None
+
+        # Expose the global flag status through instance for easier access
+        self.is_system_audio_available = IS_SYSTEM_AUDIO_AVAILABLE
 
     def _get_loopback_device(self, p):
         """
@@ -78,66 +83,58 @@ class AudioRecorder:
         print("Recording started...")
 
         # Determine if we are on Windows and have the patch
-        use_loopback = IS_WINDOWS_LOOPBACK_AVAILABLE and platform.system() == "Windows"
+        use_loopback = self.is_system_audio_available and platform.system() == "Windows"
 
-        if use_loopback:
-            with pyaudio.PyAudio() as p:
-                device_info = self._get_loopback_device(p)
+        if pyaudio:
+             with pyaudio.PyAudio() as p:
+                if use_loopback:
+                    # --- SYSTEM AUDIO (LOOPBACK) ---
+                    device_info = self._get_loopback_device(p)
+                    if not device_info:
+                        print("No Loopback device found. Falling back to default input.")
+                        use_loopback = False
+                    else:
+                        print(f"Recording from Loopback: {device_info['name']}")
+                        input_rate = int(device_info["defaultSampleRate"])
+                        channels = device_info["maxInputChannels"]
+                        input_device_index = device_info["index"]
 
-                if not device_info:
-                    print("No Loopback device found. Aborting.")
-                    return
+                if not use_loopback:
+                     # --- STANDARD MICROPHONE ---
+                     print("Recording from Default Microphone")
+                     # Use default input device
+                     input_rate = 44100
+                     channels = 1
+                     input_device_index = None # Default
 
-                print(f"Recording from: {device_info['name']}")
-
-                input_rate = int(device_info["defaultSampleRate"])
-                channels = device_info["maxInputChannels"]
-
-                # We read chunks based on the INPUT rate, not target rate
+                # Setup Stream
                 frames_per_buffer = int(input_rate * self.chunk_duration)
 
                 stream = p.open(format=pyaudio.paInt16,
                                 channels=channels,
                                 rate=input_rate,
                                 input=True,
-                                input_device_index=device_info["index"],
+                                input_device_index=input_device_index,
                                 frames_per_buffer=frames_per_buffer)
 
                 while self.is_recording:
                     try:
-                        data = stream.read(frames_per_buffer)
+                        data = stream.read(frames_per_buffer, exception_on_overflow=False)
                         processed_audio = self._process_audio_chunk(data, input_rate, channels)
                         self.audio_queue.put(processed_audio)
-                    except OSError as e:
-                        print(f"Recording buffer overflow or error: {e}")
+                    except Exception as e:
+                        print(f"Recording error: {e}")
                         continue
 
                 stream.stop_stream()
                 stream.close()
-
         else:
-            # --- MOCK / LINUX LOGIC ---
-            print("System audio recording not available. Using Mock/Mic.")
-            if pyaudio:
-                 with pyaudio.PyAudio() as p:
-                    input_rate = 44100
-                    channels = 1
-                    frames_per_buffer = int(input_rate * self.chunk_duration)
-
-                    stream = p.open(format=pyaudio.paInt16, channels=channels, rate=input_rate, input=True, frames_per_buffer=frames_per_buffer)
-                    while self.is_recording:
-                        try:
-                            data = stream.read(frames_per_buffer, exception_on_overflow=False)
-                            processed_audio = self._process_audio_chunk(data, input_rate, channels)
-                            self.audio_queue.put(processed_audio)
-                        except:
-                            pass
-            else:
-                # Total Mock
-                while self.is_recording:
-                    time.sleep(self.chunk_duration)
-                    fake_audio = np.random.uniform(-0.1, 0.1, int(self.target_sample_rate * self.chunk_duration)).astype(np.float32)
-                    self.audio_queue.put(fake_audio)
+            # --- TOTAL MOCK (No pyaudio) ---
+            print("No audio backend available. Generating silence.")
+            while self.is_recording:
+                time.sleep(self.chunk_duration)
+                fake_audio = np.random.uniform(-0.01, 0.01, int(self.target_sample_rate * self.chunk_duration)).astype(np.float32)
+                self.audio_queue.put(fake_audio)
 
     def start(self):
         if not self.is_recording:

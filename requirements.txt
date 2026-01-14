@@ -1,7 +1,5 @@
 faster-whisper
 flet
-pyaudiowpatch
 numpy
 python-docx
-moviepy
 scipy

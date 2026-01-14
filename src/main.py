@@ -15,6 +15,11 @@ def main(page: ft.Page):
     recorder = AudioRecorder()
     transcriber = Transcriber(model_size="small") # Use 'small' model
 
+    # Check audio availability
+    audio_status_msg = "Sistem Audio Siap (Zoom)" if recorder.is_system_audio_available else "PERINGATAN: Fitur rekam Zoom non-aktif (Hanya Mic)."
+    audio_status_color = ft.Colors.GREEN if recorder.is_system_audio_available else ft.Colors.ORANGE
+    start_btn_text = "Mulai Rekam (System Audio)" if recorder.is_system_audio_available else "Mulai Rekam (Microphone Only)"
+
     # State Variables
     is_recording = False
     stop_event = threading.Event()
@@ -53,7 +58,7 @@ def main(page: ft.Page):
         btn_stop.disabled = False
         page.update()
 
-        transcript_result.controls.append(ft.Text("Mulai merekam... (Menunggu audio...)", color="green", italic=True))
+        transcript_result.controls.append(ft.Text(f"Mulai merekam... ({start_btn_text})", color="green", italic=True))
         page.update()
 
         # Start Recorder
@@ -90,8 +95,19 @@ def main(page: ft.Page):
         page.snack_bar.open = True
         page.update()
 
-    btn_start = ft.ElevatedButton("Mulai Rekam (System Audio)", on_click=start_recording, icon=ft.Icons.MIC)
+    btn_start = ft.ElevatedButton(start_btn_text, on_click=start_recording, icon=ft.Icons.MIC)
     btn_stop = ft.ElevatedButton("Stop", on_click=stop_recording, icon=ft.Icons.STOP, disabled=True, color="red")
+
+    status_indicator = ft.Container(
+        content=ft.Row([
+            ft.Icon(ft.Icons.INFO, color=audio_status_color),
+            ft.Text(audio_status_msg, color=audio_status_color, weight="bold")
+        ]),
+        padding=10,
+        bgcolor=ft.Colors.GREY_50,
+        border_radius=5
+    )
+
     btn_export_txt = ft.ElevatedButton("Export TXT", icon=ft.Icons.SAVE, on_click=export_txt)
     btn_export_docx = ft.ElevatedButton("Export Word", icon=ft.Icons.DESCRIPTION, on_click=export_docx)
 
@@ -149,6 +165,7 @@ def main(page: ft.Page):
     # Views
     realtime_view = ft.Container(
         content=ft.Column([
+            status_indicator,
             ft.Row([btn_start, btn_stop, ft.VerticalDivider(), btn_export_txt, btn_export_docx]),
             ft.Divider(),
             ft.Container(
